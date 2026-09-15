@@ -77,7 +77,15 @@ describe("postgres.js null-socket write guard (HOM-421)", () => {
       // A server that accepts and stays silent: the handshake never completes,
       // so the driver's `initial` query stays set — the exact state whose
       // early return in closed() strands a null-socket connection in the pool.
-      const server = net.createServer((socket) => socket.on("error", () => {}));
+      // Both ends of every socket are tracked: the driver reconnects on a
+      // backoff, so teardown has to account for sockets created after the
+      // assertions rather than just the last one handed out.
+      const accepted: net.Socket[] = [];
+      const dialled: net.Socket[] = [];
+      const server = net.createServer((socket) => {
+        accepted.push(socket);
+        socket.on("error", () => {});
+      });
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const { port } = server.address() as net.AddressInfo;
 
@@ -94,17 +102,26 @@ describe("postgres.js null-socket write guard (HOM-421)", () => {
       };
 
       let held: net.Socket | undefined;
-      const sql = postgres(`postgres://u:p@127.0.0.1:${port}/db`, {
+      // postgres.js accepts a `socket` factory at runtime (see createSocket in
+      // src/connection.js) but does not declare it in its shipped types, so the
+      // options are assembled untyped and cast at the call site.
+      const driverOptions = {
         max: 1,
-        connect_timeout: 30,
+        connect_timeout: 5,
         idle_timeout: 0,
         onnotice: () => {},
         socket: () => {
           held = new net.Socket();
+          held.on("error", () => {});
           held.connect(port, "127.0.0.1");
-          return held as never;
+          dialled.push(held);
+          return held;
         },
-      });
+      };
+      const sql = postgres(
+        `postgres://u:p@127.0.0.1:${port}/db`,
+        driverOptions as unknown as Parameters<typeof postgres>[1],
+      );
 
       try {
         void sql`select 1`.catch(() => {});
@@ -127,8 +144,14 @@ describe("postgres.js null-socket write guard (HOM-421)", () => {
         expect(uncaught.map((error) => error.message)).toEqual([]);
       } finally {
         await sql.end({ timeout: 1 }).catch(() => {});
+        // `server.close()` only stops new connections; it waits on every socket
+        // still open, which is exactly the state this test engineers. Drop both
+        // ends. (`closeAllConnections()` is an http.Server method, not a
+        // net.Server one, so the tracked sockets are the only lever here.)
+        for (const socket of dialled) socket.destroy();
+        for (const socket of accepted) socket.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
-    });
+    }, 20_000);
   });
 });
