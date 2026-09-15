@@ -1,0 +1,138 @@
+diff --git a/cf/src/connection.js b/cf/src/connection.js
+index 8e79170..2d3a768 100644
+--- a/cf/src/connection.js
++++ b/cf/src/connection.js
+@@ -254,8 +254,24 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function nextWrite(fn) {
+-    const x = socket.write(chunk, fn)
+     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
++    if (socket === null) {
++      // PATCH HOM-421 (paperclip): null-socket write guard.
++      // The socket was torn down between this write being queued and the
++      // immediate firing: closed() and terminate() both set `socket = null`,
++      // and a queued nextWrite outlives them. Writing here throws
++      // `TypeError: Cannot read properties of null (reading 'write')` from a
++      // macrotask, which is an uncaughtException rather than a rejected
++      // query promise, so Node's default handler terminates the process.
++      // Dropping the buffered chunk is the correct outcome: it belongs to a
++      // connection that no longer exists, and the pool rebuilds and resends
++      // the query on the reconnect that closed() already scheduled.
++      // `false` matches what a destroyed Node socket returns.
++      chunk = nextWriteTimer = null
++      fn && fn(Errors.connection('CONNECTION_CLOSED', options, socket))
++      return false
++    }
++    const x = socket.write(chunk, fn)
+     chunk = nextWriteTimer = null
+     return x
+   }
+@@ -427,6 +443,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       error(Errors.connection('CONNECTION_DESTROYED', options))
+ 
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     if (socket) {
+       socket.removeListener('data', data)
+       socket.removeListener('connect', connected)
+@@ -440,6 +457,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     remaining = 0
+     incomings = null
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
+diff --git a/cjs/src/connection.js b/cjs/src/connection.js
+index 07f6716..eab7032 100644
+--- a/cjs/src/connection.js
++++ b/cjs/src/connection.js
+@@ -252,8 +252,24 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function nextWrite(fn) {
+-    const x = socket.write(chunk, fn)
+     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
++    if (socket === null) {
++      // PATCH HOM-421 (paperclip): null-socket write guard.
++      // The socket was torn down between this write being queued and the
++      // immediate firing: closed() and terminate() both set `socket = null`,
++      // and a queued nextWrite outlives them. Writing here throws
++      // `TypeError: Cannot read properties of null (reading 'write')` from a
++      // macrotask, which is an uncaughtException rather than a rejected
++      // query promise, so Node's default handler terminates the process.
++      // Dropping the buffered chunk is the correct outcome: it belongs to a
++      // connection that no longer exists, and the pool rebuilds and resends
++      // the query on the reconnect that closed() already scheduled.
++      // `false` matches what a destroyed Node socket returns.
++      chunk = nextWriteTimer = null
++      fn && fn(Errors.connection('CONNECTION_CLOSED', options, socket))
++      return false
++    }
++    const x = socket.write(chunk, fn)
+     chunk = nextWriteTimer = null
+     return x
+   }
+@@ -425,6 +441,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       error(Errors.connection('CONNECTION_DESTROYED', options))
+ 
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     if (socket) {
+       socket.removeListener('data', data)
+       socket.removeListener('connect', connected)
+@@ -438,6 +455,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     remaining = 0
+     incomings = null
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
+diff --git a/src/connection.js b/src/connection.js
+index 1b1cccd..4c25e5b 100644
+--- a/src/connection.js
++++ b/src/connection.js
+@@ -252,8 +252,24 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function nextWrite(fn) {
+-    const x = socket.write(chunk, fn)
+     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
++    if (socket === null) {
++      // PATCH HOM-421 (paperclip): null-socket write guard.
++      // The socket was torn down between this write being queued and the
++      // immediate firing: closed() and terminate() both set `socket = null`,
++      // and a queued nextWrite outlives them. Writing here throws
++      // `TypeError: Cannot read properties of null (reading 'write')` from a
++      // macrotask, which is an uncaughtException rather than a rejected
++      // query promise, so Node's default handler terminates the process.
++      // Dropping the buffered chunk is the correct outcome: it belongs to a
++      // connection that no longer exists, and the pool rebuilds and resends
++      // the query on the reconnect that closed() already scheduled.
++      // `false` matches what a destroyed Node socket returns.
++      chunk = nextWriteTimer = null
++      fn && fn(Errors.connection('CONNECTION_CLOSED', options, socket))
++      return false
++    }
++    const x = socket.write(chunk, fn)
+     chunk = nextWriteTimer = null
+     return x
+   }
+@@ -425,6 +441,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       error(Errors.connection('CONNECTION_DESTROYED', options))
+ 
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     if (socket) {
+       socket.removeListener('data', data)
+       socket.removeListener('connect', connected)
+@@ -438,6 +455,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     remaining = 0
+     incomings = null
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
