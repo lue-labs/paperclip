@@ -22,6 +22,9 @@ const PAPERCLIP_TOOL_ACTION_SIGNING_SECRET =
 
 process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
 process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+// Worker processes reload this config; retain the main process's server path
+// for specs that seed historical database state in the throwaway instance.
+process.env.PAPERCLIP_E2E_SERVER_CONFIG ??= PAPERCLIP_CONFIG;
 // Specs that mint agent JWTs in-process (via createLocalAgentJwt) must derive
 // the same per-instance signing key as the webServer, or verification fails
 // with a 401 instead of authenticating as the agent.
@@ -35,7 +38,7 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   // These suites target dedicated multi-user configurations/ports and are
   // intentionally not part of the default local_trusted e2e run.
-  testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
+  testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
   // All specs share one throwaway server, and several toggle instance-level
@@ -72,6 +75,7 @@ export default defineConfig({
     env: {
       ...process.env,
       NODE_ENV: "test",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",
       PAPERCLIP_API_URL: BASE_URL,

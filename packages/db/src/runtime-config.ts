@@ -131,7 +131,12 @@ export function resolveDatabaseEnvironmentLayers(): DatabaseEnvironmentLayers {
   const paperclipEnvPath = resolvePaperclipEnvPath(configPath);
   const cwdEnvPath = path.resolve(process.cwd(), ".env");
   const paperclip = readEnvEntries(paperclipEnvPath);
-  const cwd = sameFile(cwdEnvPath, paperclipEnvPath) ? {} : readEnvEntries(cwdEnvPath);
+  // PAPERCLIP_DISABLE_CWD_ENV_FILE mirrors server/src/env-file-policy.ts (upstream #12894,
+  // used by `paperclipai test-drive` isolation).
+  const cwd =
+    sameFile(cwdEnvPath, paperclipEnvPath) || process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE === "true"
+      ? {}
+      : readEnvEntries(cwdEnvPath);
   const processEntries = { ...process.env };
 
   return {

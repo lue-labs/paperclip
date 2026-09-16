@@ -23,6 +23,22 @@ type HeartbeatRunSlotClaim = {
   dailyCapBlock: DailyRunCapBlock | null;
 };
 
+/**
+ * Column patch that mints durable ownership for a queued -> running claim:
+ * a fresh owner_token, a fence pulled from the global heartbeat_run_fence_seq
+ * sequence, and an initial lease. Spread this into the claim UPDATE so the
+ * ownership columns land in the same statement as the status transition.
+ */
+export function runOwnershipClaimPatch(input: { startedAt: Date; leaseTtlMs?: number }) {
+  return {
+    ownerToken: mintOwnerToken(),
+    fence: sql`nextval('heartbeat_run_fence_seq')`,
+    leaseExpiresAt: new Date(input.startedAt.getTime() + (input.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS)),
+    leaseRenewedAt: input.startedAt,
+    claimAttempt: sql`${heartbeatRuns.claimAttempt} + 1`,
+  };
+}
+
 function currentUtcDayWindow(now: Date) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
@@ -64,9 +80,24 @@ export async function claimHeartbeatRunSlotWithDailyCap(
   return claimHeartbeatRunSlotInternal(db, input);
 }
 
-async function claimHeartbeatRunSlotInternal(
+type SlotAdmissionInput = {
+  runId: string;
+  agentId: string;
+  dailyRunLimit?: number | null;
+};
+
+/**
+ * Run `claimWrite` inside a transaction that holds the per-agent advisory
+ * lock and has verified the daily-run cap and the concurrency cap. The
+ * callback performs the actual queued -> running UPDATE (which may carry
+ * caller-specific bookkeeping) and returns the claimed row or null when the
+ * compare-and-set lost. Separate Paperclip workers serialize on the advisory
+ * lock, so the caps remain strict across replicas and restarts.
+ */
+export async function withHeartbeatRunSlotAdmission(
   db: Db,
-  input: HeartbeatRunSlotInput & { dailyRunLimit?: number | null },
+  input: SlotAdmissionInput,
+  claimWrite: (tx: Db) => Promise<typeof heartbeatRuns.$inferSelect | null>,
 ): Promise<HeartbeatRunSlotClaim> {
   return db.transaction(async (tx) => {
     const txDb = tx as unknown as Db;
@@ -116,21 +147,24 @@ async function claimHeartbeatRunSlotInternal(
       return { claimed: null, dailyCapBlock: null };
     }
 
-    const ownerToken = mintOwnerToken();
-    const leaseExpiresAt = new Date(input.startedAt.getTime() + (input.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS));
+    const claimed = await claimWrite(txDb);
+    return { claimed, dailyCapBlock: null };
+  });
+}
 
-    const claimed = await txDb
+async function claimHeartbeatRunSlotInternal(
+  db: Db,
+  input: HeartbeatRunSlotInput & { dailyRunLimit?: number | null },
+): Promise<HeartbeatRunSlotClaim> {
+  return withHeartbeatRunSlotAdmission(db, input, (txDb) =>
+    txDb
       .update(heartbeatRuns)
       .set({
         status: "running",
         responsibleUserId: input.responsibleUserId,
         startedAt: input.startedAt,
         updatedAt: input.startedAt,
-        ownerToken,
-        fence: sql`nextval('heartbeat_run_fence_seq')`,
-        leaseExpiresAt,
-        leaseRenewedAt: input.startedAt,
-        claimAttempt: sql`${heartbeatRuns.claimAttempt} + 1`,
+        ...runOwnershipClaimPatch(input),
       })
       .where(
         and(
@@ -140,7 +174,6 @@ async function claimHeartbeatRunSlotInternal(
         ),
       )
       .returning()
-      .then((rows) => rows[0] ?? null);
-    return { claimed, dailyCapBlock: null };
-  });
+      .then((rows) => rows[0] ?? null),
+  );
 }

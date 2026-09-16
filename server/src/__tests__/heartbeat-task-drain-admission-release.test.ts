@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -225,9 +225,9 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   // partway through, without touching any other table's update path.
   // tablesByCall maps a 0-based db.transaction() call index (in call order)
   // to the table that call should fail on; a call index with no entry runs
-  // every update for real. For example { 0: issues } fails only the
-  // issue-lock write inside releaseRunClaimedJustBeforeSuppression's
-  // transaction.
+  // every update for real. For example { 1: issues } lets the atomic stale-run
+  // validation transaction complete, then fails only the issue-lock write
+  // inside releaseRunClaimedJustBeforeSuppression's transaction.
   function withFailingTransactionalUpdate(realDb: typeof db, tablesByCall: Record<number, unknown>) {
     let callIndex = 0;
     return new Proxy(realDb, {
@@ -259,11 +259,12 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   it("leaves the run row running for the orphan reaper when the atomic release fails", async () => {
     const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
-    // The claim itself now uses a transaction before executeRun's suppression
-    // branch. Fault the second transaction (the release transaction) on the
-    // issue-lock write, so that branch catches the failure, logs it, and returns
-    // instead of throwing. There is no in-process fallback or retry for this path.
-    const failingDb = withFailingTransactionalUpdate(db, { 1: issues });
+    // Fault the release transaction on the issue-lock write, so executeRun's
+    // suppression branch catches the failure, logs it, and returns instead
+    // of throwing. There is no in-process fallback or retry for this path.
+    // Fork: claimQueuedRun runs two transactions here (lock validation, then
+    // heartbeat-run-slot admission), so the release transaction is index 2.
+    const failingDb = withFailingTransactionalUpdate(db, { 2: issues });
     const heartbeat = heartbeatService(failingDb);
 
     const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
@@ -312,12 +313,20 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(status.activeRuns).toBe(0);
     expect(status.quiescent).toBe(true);
 
-    // The run's row is still "running". Let its durable lease expire to model
-    // the next orphan-reaper cycle; a still-live lease is intentionally not
-    // reaped merely because this process no longer tracks the execution.
+    // Missing local tracking cannot override the durable lease. Once that
+    // unrenewed lease expires, the reaper finalizes the orphan and releases the
+    // issue lock on its own cycle.
+    // Fork: the reaper defers to both the upstream controller lease
+    // (controllerLeaseExpiresAt) and the fork ownership lease (leaseExpiresAt);
+    // expire both so the orphan takeover path runs.
+    const beforeExpiry = await heartbeat.reapOrphanedRuns();
+    expect(beforeExpiry.runIds).not.toContain(runId);
     await db
       .update(heartbeatRuns)
-      .set({ leaseExpiresAt: new Date(0) })
+      .set({
+        leaseExpiresAt: new Date(0),
+        controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+      })
       .where(eq(heartbeatRuns.id, runId));
     const reapResult = await heartbeat.reapOrphanedRuns();
     expect(reapResult.runIds).toContain(runId);

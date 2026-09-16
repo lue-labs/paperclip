@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2023",
+    "types": ["node"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
@@ -12,19 +13,9 @@
     "isolatedModules": true,
     "noEmit": true,
     "paths": {
-      "@/*": [
-        "./src/*"
-      ],
-      "lexical": [
-        "./node_modules/lexical/index.d.ts"
-      ]
-    },
-    "types": [
-      "node"
-    ]
+      "@/*": ["./src/*"],
+      "lexical": ["./node_modules/lexical/index.d.ts"]
+    }
   },
-  "include": [
-    "src",
-    "storybook"
-  ]
+  "include": ["src", "storybook", "vitest.setup.ts"]
 }

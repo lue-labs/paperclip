@@ -5,7 +5,6 @@ import {
   text,
   timestamp,
   integer,
-  jsonb,
   index,
   bigserial,
   bigint,
@@ -14,6 +13,7 @@ import {
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { runEventPayload } from "../run-event-payload.js";
 
 export const heartbeatRunEvents = pgTable(
   "heartbeat_run_events",
@@ -28,7 +28,7 @@ export const heartbeatRunEvents = pgTable(
     level: text("level"),
     color: text("color"),
     message: text("message"),
-    payload: jsonb("payload").$type<Record<string, unknown>>(),
+    payload: runEventPayload("payload"),
     // Fence held by heartbeat_runs at the moment this event was accepted (see
     // run-ownership-store.ts). Nullable: unclaimed/pre-fencing runs have no
     // fence. An audit trail for reconciliation, not itself enforced on read.
@@ -41,7 +41,7 @@ export const heartbeatRunEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    runSeqIdx: index("heartbeat_run_events_run_seq_idx").on(table.runId, table.seq),
+    runSeqUq: uniqueIndex("heartbeat_run_events_run_seq_uq").on(table.runId, table.seq),
     runSourceEventUq: uniqueIndex("heartbeat_run_events_run_source_event_uq")
       .on(table.runId, table.sourceEventId)
       .where(sql`${table.sourceEventId} is not null`),
