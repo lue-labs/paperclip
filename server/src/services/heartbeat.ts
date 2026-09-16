@@ -26785,6 +26785,17 @@ export function heartbeatService(
         (error): QueuedResponsibleUserAttempt => ({ ok: false, error }),
       );
 
+    // Fork: settling above happens *before* the transaction (issue #89 pool
+    // deadlock), but `operatorResponsibleUserId` is assigned *inside* it when a
+    // locked receipt transfers execution authority to the interrupting operator.
+    // Upstream resolved lazily at point of use and so observed that assignment;
+    // the eager settle would otherwise freeze the pre-interrupt queue owner.
+    // Re-check the operator here so the run seed still credits the interrupter.
+    const effectiveQueuedResponsibleUser = (
+      attempt: QueuedResponsibleUserAttempt,
+    ): QueuedResponsibleUserAttempt =>
+      operatorResponsibleUserId ? { ok: true, userId: operatorResponsibleUserId } : attempt;
+
     const budgetBlock = await budgets.getInvocationBlock(
       agent.companyId,
       agentId,
@@ -28127,7 +28138,8 @@ export function heartbeatService(
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
 
-          if (!queuedResponsibleUserIdAttempt.ok) {
+          const queuedResponsibleUser = effectiveQueuedResponsibleUser(queuedResponsibleUserIdAttempt);
+          if (!queuedResponsibleUser.ok) {
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
               companyId: agent.companyId,
@@ -28137,15 +28149,15 @@ export function heartbeatService(
               reason: "responsible_user_unresolved",
               payload,
               status: "skipped",
-              error: queuedResponsibleUserIdAttempt.error instanceof Error
-                ? queuedResponsibleUserIdAttempt.error.message
-                : String(queuedResponsibleUserIdAttempt.error),
+              error: queuedResponsibleUser.error instanceof Error
+                ? queuedResponsibleUser.error.message
+                : String(queuedResponsibleUser.error),
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
-            return { kind: "responsible_user_unresolved" as const, error: queuedResponsibleUserIdAttempt.error };
+            return { kind: "responsible_user_unresolved" as const, error: queuedResponsibleUser.error };
           }
 
           const wakeupRequest = await tx
@@ -28235,7 +28247,7 @@ export function heartbeatService(
               invocationSource: source,
               triggerDetail,
               status: "queued",
-              responsibleUserId: queuedResponsibleUserIdAttempt.userId,
+              responsibleUserId: queuedResponsibleUser.userId,
               wakeupRequestId: wakeupRequest.id,
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
@@ -28489,7 +28501,8 @@ export function heartbeatService(
         return { kind: "skipped" as const };
       }
 
-      if (!queuedResponsibleUserIdAttempt.ok) {
+      const queuedResponsibleUser = effectiveQueuedResponsibleUser(queuedResponsibleUserIdAttempt);
+      if (!queuedResponsibleUser.ok) {
         await tx.insert(agentWakeupRequests).values({
           companyId: agent.companyId,
           agentId,
@@ -28498,15 +28511,15 @@ export function heartbeatService(
           reason: "responsible_user_unresolved",
           payload,
           status: "skipped",
-          error: queuedResponsibleUserIdAttempt.error instanceof Error
-            ? queuedResponsibleUserIdAttempt.error.message
-            : String(queuedResponsibleUserIdAttempt.error),
+          error: queuedResponsibleUser.error instanceof Error
+            ? queuedResponsibleUser.error.message
+            : String(queuedResponsibleUser.error),
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
           finishedAt: new Date(),
         });
-        return { kind: "responsible_user_unresolved" as const, error: queuedResponsibleUserIdAttempt.error };
+        return { kind: "responsible_user_unresolved" as const, error: queuedResponsibleUser.error };
       }
 
       const wakeupRequest = await tx
@@ -28535,7 +28548,7 @@ export function heartbeatService(
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: queuedResponsibleUserIdAttempt.userId,
+          responsibleUserId: queuedResponsibleUser.userId,
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
