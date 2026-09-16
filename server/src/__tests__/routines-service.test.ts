@@ -40,6 +40,7 @@ import { secretService } from "../services/secrets.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
+const originalPaperclipApiUrlEnv = process.env.PAPERCLIP_API_URL;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    process.env.PAPERCLIP_API_URL = "http://localhost:3100";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -88,6 +90,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (originalPaperclipApiUrlEnv === undefined) {
+      delete process.env.PAPERCLIP_API_URL;
+    } else {
+      process.env.PAPERCLIP_API_URL = originalPaperclipApiUrlEnv;
+    }
   });
 
   async function seedFixture(opts?: {
@@ -756,15 +763,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           },
         },
         runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                env: {
-                  ROUTINE_ASSIGNEE_RUNTIME_SECRET: { type: "plain", value: sentinelSecret },
-                },
-              },
-            },
-          },
+          privateRuntimeSetting: { token: sentinelSecret },
         },
       })
       .where(eq(agents.id, agentId));

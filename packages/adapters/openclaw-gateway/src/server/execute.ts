@@ -11,6 +11,7 @@ import {
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
@@ -127,6 +128,12 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
  * gateway loading its full plugin set takes 40-56s to start listening, so the
  * previous value of 3 (a 6s budget) could never survive one. Every rollout
  * permanently killed whichever bridges happened to be mid-run.
+ *
+ * Precedence is adapterConfig.connectMaxAttempts, then the
+ * PAPERCLIP_OPENCLAW_CONNECT_MAX_ATTEMPTS env override, then this default. The
+ * env override exists so suites that point agents at an already-closed gateway
+ * fail fast (1 attempt) instead of paying the full ~90s restart budget for runs
+ * that can never connect.
  */
 export const DEFAULT_CONNECT_MAX_ATTEMPTS = 7;
 export const DEFAULT_CONNECT_RETRY_BASE_DELAY_MS = 2_000;
@@ -493,6 +500,7 @@ function buildWakeText(
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
   claimedApiKeyPath: string,
+  conversationTaskMarkdown?: string,
 ): string {
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
@@ -516,6 +524,19 @@ function buildWakeText(
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+
+  if (conversationTaskMarkdown !== undefined) {
+    return [
+      "Paperclip conversation turn for a cloud adapter.",
+      "Set these values in your run context:",
+      ...envLines,
+      `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token saved after claim-api-key).`,
+      "Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call and X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutation.",
+      "Follow the supplied chat mode directive. Keep this conversation available for the next message.",
+      structuredWakePrompt,
+      conversationTaskMarkdown,
+    ].join("\n\n");
+  }
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -1396,7 +1417,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = resolveConnectTimeoutMs(parseObject(ctx.config), timeoutMs);
-  const connectMaxAttempts = parseOptionalPositiveInteger(ctx.config.connectMaxAttempts) ?? DEFAULT_CONNECT_MAX_ATTEMPTS;
+  const connectMaxAttempts =
+    parseOptionalPositiveInteger(ctx.config.connectMaxAttempts) ??
+    parseOptionalPositiveInteger(process.env.PAPERCLIP_OPENCLAW_CONNECT_MAX_ATTEMPTS) ??
+    DEFAULT_CONNECT_MAX_ATTEMPTS;
   const connectRetryBaseDelayMs =
     parseOptionalPositiveInteger(ctx.config.connectRetryBaseDelayMs) ?? DEFAULT_CONNECT_RETRY_BASE_DELAY_MS;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
@@ -1431,6 +1455,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // must carry the execution contract itself.
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     includeExecutionContract: true,
+    conversationMode: ctx.context.conversationMode === true,
   });
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
@@ -1440,6 +1465,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
     resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
+    ctx.context.conversationMode === true
+      ? selectPaperclipTaskMarkdown(ctx.context, { resumedSession: Boolean(ctx.runtime?.sessionId) })
+      : undefined,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);

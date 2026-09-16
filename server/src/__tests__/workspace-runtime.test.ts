@@ -150,16 +150,7 @@ async function runPnpm(cwd: string, args: string[]) {
 async function writeRegisteredSourceConfig(baseCwd: string, instanceId = "source-instance") {
   const configDir = path.join(baseCwd, ".paperclip");
   await fs.mkdir(configDir, { recursive: true });
-  await fs.writeFile(
-    path.join(configDir, "config.json"),
-    JSON.stringify({
-      $meta: { version: 1, updatedAt: "2026-08-30T00:00:00.000Z", source: "configure" },
-      database: { mode: "embedded-postgres" },
-      logging: { mode: "file" },
-      server: { deploymentMode: "local_trusted", host: "127.0.0.1", port: 3100 },
-    }) + "\n",
-    "utf8",
-  );
+  await fs.writeFile(path.join(configDir, "config.json"), "{}\n", "utf8");
   await fs.writeFile(
     path.join(configDir, ".env"),
     `PAPERCLIP_INSTANCE_ID=${instanceId}\n`,
@@ -4013,7 +4004,6 @@ describe("realizeExecutionWorkspace", () => {
     const instanceId = deriveWorktreeInstanceId(workspace.cwd);
     const instanceRoot = path.join(worktreesDir, "instances", instanceId);
     await fs.mkdir(path.join(instanceRoot, "db"), { recursive: true });
-    const canonicalInstanceRoot = await fs.realpath(instanceRoot);
     await fs.mkdir(path.join(workspace.cwd, ".paperclip"), { recursive: true });
     await fs.writeFile(
       path.join(workspace.cwd, ".paperclip", ".env"),
@@ -4055,7 +4045,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations[0]?.command).toBe("printf 'cleanup ok\\n'");
     expect(operations[1]?.metadata).toMatchObject({
       cleanupAction: "remove_worktree_instance",
-      instanceRoot: canonicalInstanceRoot,
+      instanceRoot,
     });
     expect(operations[2]?.metadata).toMatchObject({
       cleanupAction: "worktree_remove",
@@ -4411,6 +4401,59 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(services).toEqual([]);
   });
 
+  it("enables UI dev middleware by default for managed Paperclip worktree runtimes", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-ui-dev-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const serviceScript =
+      "const http=require('node:http');"
+      + "http.createServer((req,res)=>{"
+      + "if(req.url==='/api/health'){res.setHeader('content-type','application/json');"
+      + "res.end(JSON.stringify({status:'ok'}));return;}"
+      + "res.end(process.env.PAPERCLIP_UI_DEV_MIDDLEWARE||'missing');"
+      + "}).listen(Number(process.env.PORT),'127.0.0.1');";
+
+    try {
+      const [runtime] = await startRuntimeServicesForWorkspaceControl({
+        actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace,
+        executionWorkspaceId: "execution-workspace-ui-dev",
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "paperclip-dev",
+              command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serviceScript)}`,
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              expose: {
+                type: "url",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: { type: "manual" },
+            }],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      await expect(fetch(`${runtime!.url}/ui-mode`).then((response) => response.text()))
+        .resolves.toBe("true");
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-ui-dev",
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("injects isolated browser callback origins into separate worktree runtimes", async () => {
     const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-origin-first-"));
     const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-origin-second-"));
@@ -4569,7 +4612,9 @@ describe("ensureRuntimeServicesForRun", () => {
         command: serviceCommand,
         cwd: ".",
         port: { type: "auto" as const },
-        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 3, intervalMs: 100 },
+        // This checks replacement, not startup latency. Allow the same startup
+        // budget as other real-process fixtures on busy CI hosts.
+        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
         expose: { type: "url" as const, urlTemplate: "http://127.0.0.1:{{port}}" },
         lifecycle: "shared" as const,
         stopPolicy: { type: "manual" as const },
@@ -4595,7 +4640,7 @@ describe("ensureRuntimeServicesForRun", () => {
       });
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("reuses a shared Paperclip dev runtime after one transient unhealthy response", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-transient-health-"));
@@ -4612,7 +4657,9 @@ describe("ensureRuntimeServicesForRun", () => {
         command: serviceCommand,
         cwd: ".",
         port: { type: "auto" as const },
-        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 3, intervalMs: 100 },
+        // This checks reuse after a transient failure, not startup latency. Allow the same startup
+        // budget as other real-process fixtures on busy CI hosts.
+        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
         expose: { type: "url" as const, urlTemplate: "http://127.0.0.1:{{port}}" },
         lifecycle: "shared" as const,
         stopPolicy: { type: "manual" as const },
@@ -4632,7 +4679,7 @@ describe("ensureRuntimeServicesForRun", () => {
       });
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("rejects an unreachable exposed origin even when readiness uses a local probe", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-explicit-readiness-"));
@@ -7692,20 +7739,21 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-https-backfill-${randomUUID()}`;
 
     const reservePort = async () => {
-      const isPortFree = async (port: number) => await new Promise<boolean>((resolve) => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
         const probe = net.createServer();
-        probe.once("error", () => resolve(false));
-        probe.listen(port, "127.0.0.1", () => {
-          probe.close((error) => resolve(!error));
+        // macOS can allocate an entire ephemeral range above 55535. Pick a
+        // bounded candidate so the test's HMR companion remains a valid port.
+        await new Promise<void>((resolve) => {
+          probe.once("error", () => resolve());
+          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
         });
-      });
-      // Use a bounded non-broker range instead of relying on the OS ephemeral
-      // range, which may be entirely above 55_535 on macOS. The fixture's
-      // HMR companion is port + 10_000, so both ports must remain valid.
-      for (let attempt = 0; attempt < 1_000; attempt += 1) {
-        const port = 40_000 + attempt;
-        if (port >= 42_000 || !(await isPortFree(port))) continue;
-        if (await isPortFree(port + 10_000)) return port;
+        if (!probe.listening) continue;
+        const address = probe.address();
+        const port = typeof address === "object" && address ? address.port : null;
+        await new Promise<void>((resolve, reject) => {
+          probe.close((error) => error ? reject(error) : resolve());
+        });
+        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
       }
       throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
     };
@@ -8038,20 +8086,23 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     // the reconciler treat the row as an exposure reservation and report drift,
     // so the live service never reaches the adoption path this test verifies.
     const reservePort = async () => {
-      const isPortFree = async (port: number) => await new Promise<boolean>((resolve) => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
         const probe = net.createServer();
-        probe.once("error", () => resolve(false));
-        probe.listen(port, "127.0.0.1", () => {
-          probe.close((error) => resolve(!error));
+        // macOS can allocate an entire ephemeral range above 55535. Pick a
+        // bounded candidate so the test's HMR companion remains a valid port.
+        await new Promise<void>((resolve) => {
+          probe.once("error", () => resolve());
+          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
         });
-      });
-      // Keep this fixture out of the runtime exposure broker range. A bounded
-      // range is deterministic on macOS, whose ephemeral ports may all be too
-      // high for the companion-port safety checks used by nearby fixtures.
-      for (let attempt = 0; attempt < 1_000; attempt += 1) {
-        const port = 40_000 + attempt;
-        if (port >= 42_000) continue;
-        if (await isPortFree(port)) return port;
+        if (!probe.listening) continue;
+        const address = probe.address();
+        const candidate = typeof address === "object" && address ? address.port : null;
+        await new Promise<void>((resolve, reject) => {
+          probe.close((error) => error ? reject(error) : resolve());
+        });
+        if (candidate && candidate <= 55_535 && (candidate < 42_000 || candidate > 42_999)) {
+          return candidate;
+        }
       }
       throw new Error("Failed to reserve pnpm reconciliation test port outside the broker range");
     };
@@ -9589,7 +9640,7 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
 
     const workspace = await realizeExistingBranch(repoRoot, "feature/legacy-checkout");
 
-    expect(workspace.cwd).toBe(await fs.realpath(legacyPath));
+    expect(workspace.cwd).toBe(path.resolve(legacyPath));
     expect(workspace.branchName).toBe("feature/legacy-checkout");
     expect(workspace.created).toBe(false);
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(branchTip);

@@ -21,6 +21,15 @@ type SupertestTestConstructor = {
   };
 };
 
+// Fork: the openclaw-gateway adapter retries transient connect failures on a
+// 2+4+8+16+30+30s ladder so a run survives a gateway restart. Suites routinely
+// leave runs pointed at a fixture gateway that is already closed, where every
+// attempt is ECONNREFUSED and the full ladder just adds ~90s before the
+// inevitable failure -- long enough to trip afterAll drain timeouts. Tests that
+// exercise retry behaviour set connectMaxAttempts in adapterConfig, which takes
+// precedence over this.
+process.env.PAPERCLIP_OPENCLAW_CONNECT_MAX_ATTEMPTS ??= "1";
+
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 

@@ -1,5 +1,3 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "pi_local";
 export const label = "Pi";
 
@@ -8,8 +6,6 @@ export const label = "Pi";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @earendil-works/pi-coding-agent@0.82.1";
 
 export const models: Array<{ id: string; label: string }> = [];
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [];
 
 export const agentConfigurationDoc = `# pi_local agent configuration
 

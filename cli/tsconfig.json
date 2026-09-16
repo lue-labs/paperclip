@@ -3,13 +3,7 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "..",
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src",
-    "../packages/shared/src",
-    "../packages/plugins/create-paperclip-plugin/src"
-  ]
+  "include": ["src", "../packages/shared/src", "../server/src/types/express.d.ts", "../packages/plugins/create-paperclip-plugin/src"]
 }
