@@ -42,6 +42,32 @@ type Db = ReturnType<typeof createDb>;
 type Heartbeat = ReturnType<typeof heartbeatService>;
 
 /**
+ * The rejected value flushOutputProgress ultimately awaits. `writeFencedRunPatch`
+ * chains `.returning().then()` onto the `.where()` result for its CAS read-back,
+ * so a bare rejected promise here would be orphaned: the awaited chain rejects
+ * once and the original rejection surfaces again as an unhandled rejection,
+ * which fails the run even though every assertion passes. Returning a
+ * thenable whose `returning()` yields itself keeps exactly one rejection in
+ * play, whether the caller awaits `.where()` directly or continues the chain.
+ */
+function rejectedFencedWrite(): Promise<never> & { returning: () => Promise<never> } {
+  const rejection = Promise.reject(
+    Object.assign(
+      new Error(
+        "canceling the wait for synchronous replication and terminating connection due to administrator command",
+      ),
+      { code: "57P01" },
+    ),
+  ) as Promise<never> & { returning: () => Promise<never> };
+  // Attach before any await so the rejection is never momentarily unobserved.
+  rejection.returning = () => rejection;
+  // The chain below always observes it; this keeps Node from flagging the tick
+  // between construction and the first `.then()` as an unhandled rejection.
+  rejection.catch(() => {});
+  return rejection;
+}
+
+/**
  * Wraps a real Db so that the specific `heartbeatRuns` update issued by
  * flushOutputProgress (identifiable by the `lastOutputSeq` field it alone
  * writes) fails with a simulated dropped-connection error, matching
@@ -58,17 +84,7 @@ function withOutputProgressFlushFailureInjected(realDb: Db): Db {
           const originalSet = builder.set.bind(builder);
           builder.set = (values: Record<string, unknown>) => {
             if (values && typeof values === "object" && "lastOutputSeq" in values) {
-              return {
-                where: () =>
-                  Promise.reject(
-                    Object.assign(
-                      new Error(
-                        "canceling the wait for synchronous replication and terminating connection due to administrator command",
-                      ),
-                      { code: "57P01" },
-                    ),
-                  ),
-              };
+              return { where: () => rejectedFencedWrite() };
             }
             return originalSet(values);
           };
@@ -100,17 +116,7 @@ function withOutputProgressFlushFailureInjectedOnce(realDb: Db, attemptCounter: 
             if (values && typeof values === "object" && "lastOutputSeq" in values) {
               attemptCounter.count += 1;
               if (attemptCounter.count === 1) {
-                return {
-                  where: () =>
-                    Promise.reject(
-                      Object.assign(
-                        new Error(
-                          "canceling the wait for synchronous replication and terminating connection due to administrator command",
-                        ),
-                        { code: "57P01" },
-                      ),
-                    ),
-                };
+                return { where: () => rejectedFencedWrite() };
               }
             }
             return originalSet(values);
