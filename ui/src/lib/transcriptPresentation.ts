@@ -237,12 +237,31 @@ export function describeToolInput(name: string, input: unknown): ToolInputDetail
   return details;
 }
 
+function summarizeJsonToolResult(result: string): string | null {
+  try {
+    const parsed = JSON.parse(result) as unknown;
+    if (Array.isArray(parsed)) {
+      return `${parsed.length} item${parsed.length === 1 ? "" : "s"} returned`;
+    }
+    const record = asRecord(parsed);
+    if (record) {
+      const fieldCount = Object.keys(record).length;
+      return `${fieldCount} field${fieldCount === 1 ? "" : "s"} returned`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function summarizeToolResult(
   result: string | undefined,
   isError: boolean | undefined,
   density: TranscriptDensity = "comfortable",
 ): string {
   if (!result) return isError ? "Tool failed" : "Waiting for result";
+  const jsonSummary = summarizeJsonToolResult(result.trim());
+  if (jsonSummary) return isError ? "Tool failed" : jsonSummary;
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {

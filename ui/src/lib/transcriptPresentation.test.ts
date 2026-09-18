@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { describeToolInput, summarizeToolInput } from "./transcriptPresentation";
+import {
+  describeToolInput,
+  summarizeToolInput,
+  summarizeToolResult,
+} from "./transcriptPresentation";
 
 describe("summarizeToolInput", () => {
   it("prefers human descriptions over raw commands when both exist", () => {
@@ -9,6 +13,17 @@ describe("summarizeToolInput", () => {
         command: "zsh -lc 'sed -n \"1,220p\" ui/src/components/IssueChatThread.tsx'",
       }),
     ).toBe("Inspect the issue chat thread layout classes");
+  });
+});
+
+describe("summarizeToolResult", () => {
+  it("uses a concise human preview for structured JSON results", () => {
+    expect(summarizeToolResult(JSON.stringify({ status: "ok", items: [] }), false)).toBe("2 fields returned");
+    expect(summarizeToolResult(JSON.stringify([{ id: 1 }, { id: 2 }]), false)).toBe("2 items returned");
+  });
+
+  it("does not expose structured JSON when the tool failed", () => {
+    expect(summarizeToolResult(JSON.stringify({ error: "secret detail" }), true)).toBe("Tool failed");
   });
 });
 
