@@ -117,6 +117,12 @@ export function summarizeHeartbeatRunResultJson(
 const NARRATION_OPENERS =
   /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
 
+function isLikelyRawToolPayload(text: string) {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
+  return /"(?:toolName|toolCallId|tool_call_id|tool_execution_|function_call)"\s*:/i.test(trimmed);
+}
+
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
@@ -441,7 +447,11 @@ export function resolveHeartbeatRunResponse(input: {
       readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
       readCommentText(resultJson.message);
-    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+    if (
+      legacyText &&
+      !NARRATION_OPENERS.test(legacyText.trimStart()) &&
+      !isLikelyRawToolPayload(legacyText)
+    ) {
       return {
         text: legacyText,
         decision: decision("adapter_final_response", {

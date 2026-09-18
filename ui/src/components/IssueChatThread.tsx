@@ -850,11 +850,26 @@ function fallbackTextParts(message: ThreadMessage) {
       continue;
     }
     if (part.type === "tool-call") {
-      const lines = [`Tool: ${part.toolName}`];
-      if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
-      if (typeof part.result === "string" && part.result.trim())
-        lines.push(`Result:\n${part.result}`);
-      contentLines.push(lines.join("\n\n"));
+      // The fallback is used when the rich renderer has failed. Keep it safe
+      // and human-readable too: raw args/results are still available in the
+      // run log and in the normal tool-detail disclosure, but must not become
+      // the issue transcript's primary text surface.
+      const input = part.args ?? (part.argsText?.trim() ? parseToolPayload(part.argsText) : undefined);
+      const label = displayToolName(part.toolName, input);
+      const inputSummary = summarizeToolInput(part.toolName, input);
+      const resultText = typeof part.result === "string"
+        ? part.result
+        : part.result === undefined
+          ? ""
+          : formatToolPayload(part.result);
+      const resultSummary = part.result === undefined
+        ? null
+        : summarizeToolResult(resultText, part.isError === true);
+      const details = [label, inputSummary].filter(Boolean);
+      if (resultSummary) {
+        details.push(`${part.isError ? "Failed" : "Result"}: ${resultSummary}`);
+      }
+      contentLines.push(details.join(" — "));
     }
   }
 

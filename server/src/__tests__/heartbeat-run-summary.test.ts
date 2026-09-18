@@ -264,7 +264,14 @@ describe("buildHeartbeatRunIssueComment", () => {
     }
   });
 
-  it("never suppresses a response because of its length", () => {
+  it("suppresses raw tool JSON without suppressing long human summaries", () => {
+    const rawToolJson = JSON.stringify({
+      type: "tool_execution_end",
+      toolName: "read_file",
+      result: { content: "secret transcript" },
+    });
+    expect(buildHeartbeatRunIssueComment({ summary: rawToolJson })).toBeNull();
+
     const summary = "x".repeat(20_000);
     expect(buildHeartbeatRunIssueComment({ summary })).toBe(summary);
   });
