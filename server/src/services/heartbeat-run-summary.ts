@@ -120,7 +120,7 @@ const NARRATION_OPENERS =
 function isLikelyRawToolPayload(text: string) {
   const trimmed = text.trimStart();
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
-  return /"(?:toolName|toolCallId|tool_call_id|tool_execution_|function_call)"\s*:/i.test(trimmed);
+  return /"(?:toolName|toolCallId|tool_call_id|function_call)"\s*:|"type"\s*:\s*"(?:tool|function)[^"]*"/i.test(trimmed);
 }
 
 export const LEGACY_WITHHELD_RUN_COMMENT =
