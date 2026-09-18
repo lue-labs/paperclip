@@ -77,6 +77,11 @@ interface IssueUpdateOptions extends BaseClientOptions {
   billingCode?: string;
   comment?: string;
   hiddenAt?: string;
+  blockedByIssueIds?: string;
+  unblockOwnerAgentId?: string;
+  unblockOwnerUserId?: string;
+  unblockOwnerBoard?: boolean;
+  unblockAction?: string;
 }
 
 interface IssueCommentOptions extends BaseClientOptions {
@@ -331,9 +336,15 @@ export function registerIssueCommands(program: Command): void {
       .option("--billing-code <code>", "Billing code")
       .option("--comment <text>", "Optional comment to add with update")
       .option("--hidden-at <iso8601|null>", "Set hiddenAt timestamp or literal 'null'")
+      .option("--blocked-by-issue-ids <ids>", "Comma-separated issue IDs that block this issue")
+      .option("--unblock-owner-agent-id <id>", "Unblock descriptor owner: agent ID (mutually exclusive with the other --unblock-owner-* flags)")
+      .option("--unblock-owner-user-id <id>", "Unblock descriptor owner: user ID (mutually exclusive with the other --unblock-owner-* flags)")
+      .option("--unblock-owner-board", "Unblock descriptor owner: the board (mutually exclusive with the other --unblock-owner-* flags)")
+      .option("--unblock-action <text>", "Action description for the unblock descriptor; requires exactly one --unblock-owner-* flag")
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
+          const unblockDescriptor = buildUnblockDescriptor(opts);
           const payload = updateIssueSchema.parse({
             title: opts.title,
             description: opts.description,
@@ -347,6 +358,8 @@ export function registerIssueCommands(program: Command): void {
             billingCode: opts.billingCode,
             comment: opts.comment,
             hiddenAt: parseHiddenAt(opts.hiddenAt),
+            blockedByIssueIds: opts.blockedByIssueIds !== undefined ? parseCsv(opts.blockedByIssueIds) : undefined,
+            unblockDescriptor,
           });
 
           const updated = await ctx.api.patch<Issue & { comment?: IssueCommentResponse | null }>(apiPath`/api/issues/${issueId}`, payload);
@@ -1378,6 +1391,51 @@ function parseHiddenAt(value: string | undefined): string | null | undefined {
   if (value === undefined) return undefined;
   if (value.trim().toLowerCase() === "null") return null;
   return value;
+}
+
+function buildUnblockDescriptor(
+  opts: IssueUpdateOptions,
+): { owner: { agentId: string } | { userId: string } | "board"; action: string } | undefined {
+  const ownerFlags: Array<{ flag: string; value: boolean }> = [
+    { flag: "--unblock-owner-agent-id", value: opts.unblockOwnerAgentId !== undefined },
+    { flag: "--unblock-owner-user-id", value: opts.unblockOwnerUserId !== undefined },
+    { flag: "--unblock-owner-board", value: opts.unblockOwnerBoard === true },
+  ];
+  const providedOwnerFlags = ownerFlags.filter((entry) => entry.value);
+
+  if (providedOwnerFlags.length > 1) {
+    throw new Error(
+      `Only one of ${ownerFlags.map((entry) => entry.flag).join(", ")} may be provided.`,
+    );
+  }
+
+  if (providedOwnerFlags.length === 0) {
+    if (opts.unblockAction !== undefined) {
+      throw new Error(
+        "--unblock-action requires exactly one owner flag: --unblock-owner-agent-id, --unblock-owner-user-id, or --unblock-owner-board.",
+      );
+    }
+    return undefined;
+  }
+
+  if (opts.unblockAction === undefined) {
+    throw new Error(
+      `${providedOwnerFlags[0]!.flag} requires --unblock-action <text>.`,
+    );
+  }
+
+  if (opts.status !== undefined && opts.status !== "blocked") {
+    throw new Error("--unblock-action requires --status blocked when a status is provided.");
+  }
+
+  const owner: { agentId: string } | { userId: string } | "board" =
+    opts.unblockOwnerAgentId !== undefined
+      ? { agentId: opts.unblockOwnerAgentId }
+      : opts.unblockOwnerUserId !== undefined
+        ? { userId: opts.unblockOwnerUserId }
+        : "board";
+
+  return { owner, action: opts.unblockAction };
 }
 
 function filterIssueRows(rows: Issue[], match: string | undefined): Issue[] {

@@ -426,6 +426,9 @@ npx paperclipai issue list --company-id <company-id> [--status todo,in_progress]
 npx paperclipai issue get <issue-id-or-identifier>
 npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+npx paperclipai issue update <issue-id> --status blocked --blocked-by-issue-ids <id1,id2> --unblock-owner-agent-id <agent-id> --unblock-action "..."
+npx paperclipai issue update <issue-id> --status blocked --unblock-owner-user-id <user-id> --unblock-action "..."
+npx paperclipai issue update <issue-id> --status blocked --unblock-owner-board --unblock-action "..."
 npx paperclipai issue delete <issue-id> --yes
 npx paperclipai issue comment <issue-id> --body "..." [--attachment-id <id...>] [--reopen]
 npx paperclipai issue comments <issue-id> [--limit 50]
@@ -496,6 +499,11 @@ npx paperclipai issue label:delete <label-id>
 npx paperclipai issue feedback:votes <issue-id>
 npx paperclipai issue feedback:vote <issue-id> --payload-json '{"targetType":"issue_comment","targetId":"...","vote":"up"}'
 ```
+
+Notes:
+
+- `issue update --blocked-by-issue-ids <id1,id2,...>` sets the full list of issue IDs that block this issue (comma-separated UUIDs).
+- `issue update` accepts explicit blocker-owner flags instead of a raw `--payload-json`: exactly one of `--unblock-owner-agent-id <agent-id>`, `--unblock-owner-user-id <user-id>`, or `--unblock-owner-board` (mutually exclusive), paired with `--unblock-action <text>`. Together they build the server's canonical `unblockDescriptor: { owner: { agentId } | { userId } | "board", action }` shape. The CLI validates the owner/action combination locally before sending any request; passing more than one owner flag, an owner without `--unblock-action`, or `--unblock-action` without an owner all fail fast with no HTTP call. `unblockDescriptor` is only meaningful when the issue's status is (or is being set to) `blocked`; the server rejects it otherwise.
 
 ## Project Commands
 
