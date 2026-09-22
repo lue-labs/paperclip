@@ -114,8 +114,8 @@ export const CLAWROUTER_CLAUDE_OPUS_5_5_PRICING: Readonly<{
     inputMicrosPerMillion: 4_000_000,
     cachedInputMicrosPerMillion: 200_000,
     outputMicrosPerMillion: 20_000_000,
-    // Paperclip's aggregate cache-creation counter represents the default 5m write.
-    cacheWriteMultiplier: 1.25,
+    // The usage event does not expose cache TTL, so use the 1h rate to avoid undercounting.
+    cacheWriteMultiplier: 2,
   },
 };
 

@@ -169,19 +169,19 @@ describe("fleet model rate coverage (fork)", () => {
   });
 
   it.each([
-    ["clawrouter/gpt-6-sol-200k", 1200],
-    ["clawrouter/gpt-6-luna-200k", 60],
-    ["clawrouter/claude-opus-5-5-200k", 2400],
-  ])("prices one million input and output tokens for %s", (model, expectedCostCents) => {
+    ["clawrouter/gpt-6-sol-200k", 140],
+    ["clawrouter/gpt-6-luna-200k", 7],
+    ["clawrouter/claude-opus-5-5-200k", 280],
+  ])("prices a short-context request for %s", (model, expectedCostCents) => {
     expect(
       resolveCostEventCostCents({
         costCents: 0,
         billingType: "subscription_included",
         provider: "clawrouter",
         model,
-        inputTokens: 1_000_000,
+        inputTokens: 200_000,
         cachedInputTokens: 0,
-        outputTokens: 1_000_000,
+        outputTokens: 100_000,
       }),
     ).toBe(expectedCostCents);
   });
@@ -189,7 +189,7 @@ describe("fleet model rate coverage (fork)", () => {
   it.each([
     ["clawrouter/gpt-6-sol-200k", 20, 250],
     ["clawrouter/gpt-6-luna-200k", 1, 13],
-    ["clawrouter/claude-opus-5-5-200k", 20, 500],
+    ["clawrouter/claude-opus-5-5-200k", 20, 800],
   ])("prices cached reads and cache writes for %s", (model, cachedCostCents, writeCostCents) => {
     const estimate = (cachedInputTokens: number, cacheCreationInputTokens: number) =>
       resolveCostEventCostCents({
@@ -234,7 +234,7 @@ describe("fleet model rate coverage (fork)", () => {
         inputMicrosPerMillion: 4_000_000,
         cachedInputMicrosPerMillion: 200_000,
         outputMicrosPerMillion: 20_000_000,
-        cacheWriteMultiplier: 1.25,
+        cacheWriteMultiplier: 2,
       },
     });
   });
