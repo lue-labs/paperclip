@@ -9561,8 +9561,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "subscribed_message",
     });
     const staleReaction = staleCallbacks.onReaction(reaction);
+    // A callback that returns before its barrier never settles that barrier;
+    // fail fast instead so the finally always restores the real clock.
+    const admittedBeforeReturn = (
+      admission: Promise<void>,
+      callback: Promise<unknown>,
+      label: string,
+    ) =>
+      Promise.race([
+        admission,
+        callback.then(() => {
+          throw new Error(
+            `Stale ${label} callback returned before its admission barrier`,
+          );
+        }),
+      ]);
     try {
-      await Promise.all([messageAdmissionReached, reactionAdmissionReached]);
+      await Promise.all([
+        admittedBeforeReturn(messageAdmissionReached, staleMessage, "message"),
+        admittedBeforeReturn(
+          reactionAdmissionReached,
+          staleReaction,
+          "reaction",
+        ),
+      ]);
     } finally {
       vi.useRealTimers();
     }
