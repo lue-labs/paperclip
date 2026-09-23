@@ -194,6 +194,12 @@ GET /api/routines/{routineId}/runs?limit=50
 
 Returns recent run history for the routine. Defaults to 50 most recent runs.
 
+## Historical Attempt Supersession
+
+Routine runs are ordered attempts under one recurring operational obligation. If an older failed execution issue becomes stranded after a newer run for the same routine and dispatch fingerprint has already completed, recovery suppresses the stale attempt instead of waking an agent again.
+
+Suppressed historical execution issues are marked terminal (`cancelled`), while the historical routine run keeps its terminal failed state with a supersession reason. A system comment links the newer successful run/issue. This prevents stale failed attempts from creating recovery-owner wakes or repeating external side effects after the obligation has already been satisfied by a newer equivalent run.
+
 ## Agent Access Rules
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:

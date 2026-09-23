@@ -22,6 +22,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routineRuns,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -613,7 +614,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     if (queued && input.retryOfRunId) {
-      return db
+      const retryRun = await db
         .update(heartbeatRuns)
         .set({
           retryOfRunId: input.retryOfRunId,
@@ -622,6 +623,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(eq(heartbeatRuns.id, queued.id))
         .returning()
         .then((rows) => rows[0] ?? queued);
+
+      await db
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.id, input.issueId), eq(issues.checkoutRunId, input.retryOfRunId)));
+
+      return retryRun;
     }
 
     return queued;
@@ -2454,6 +2465,86 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function suppressSupersededRoutineExecutionRecovery(issue: typeof issues.$inferSelect) {
+    if (issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+
+    const oldRun = await db
+      .select()
+      .from(routineRuns)
+      .where(and(eq(routineRuns.companyId, issue.companyId), eq(routineRuns.id, issue.originRunId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!oldRun?.dispatchFingerprint) return null;
+
+    const newerSuccessfulRun = await db
+      .select({
+        id: routineRuns.id,
+        linkedIssueId: routineRuns.linkedIssueId,
+        triggeredAt: routineRuns.triggeredAt,
+      })
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.companyId, oldRun.companyId),
+        eq(routineRuns.routineId, oldRun.routineId),
+        eq(routineRuns.dispatchFingerprint, oldRun.dispatchFingerprint),
+        gt(routineRuns.triggeredAt, oldRun.triggeredAt),
+        eq(routineRuns.status, "completed"),
+      ))
+      .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!newerSuccessfulRun) return null;
+
+    const now = new Date();
+    await db
+      .update(routineRuns)
+      .set({
+        status: "failed",
+        failureReason: `Superseded by newer successful routine run ${newerSuccessfulRun.id}`,
+        completedAt: oldRun.completedAt ?? now,
+        updatedAt: now,
+      })
+      .where(eq(routineRuns.id, oldRun.id));
+
+    const updated = await issuesSvc.update(issue.id, { status: "cancelled" });
+    if (!updated) return null;
+
+    const prefix = await getCompanyIssuePrefix(issue.companyId);
+    await issuesSvc.addComment(issue.id, [
+      "Paperclip suppressed recovery for this historical routine execution because a newer equivalent attempt already succeeded.",
+      "",
+      `- Superseded run: \`${oldRun.id}\``,
+      `- Newer successful run: \`${newerSuccessfulRun.id}\``,
+      newerSuccessfulRun.linkedIssueId ? `- Newer successful issue: ${issueUiLink({ id: newerSuccessfulRun.linkedIssueId, identifier: null }, prefix)}` : null,
+      `- Dispatch fingerprint: \`${oldRun.dispatchFingerprint}\``,
+      "- Guard: historical routine attempts must not trigger recovery wakes or external side effects after a newer equivalent attempt has completed.",
+    ].filter((line): line is string => line !== null).join("\n"), {}, { authorType: "system" });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.routine_execution_recovery_suppressed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "cancelled",
+        previousStatus: issue.status,
+        source: "recovery.suppress_superseded_routine_execution",
+        originRunId: oldRun.id,
+        routineId: oldRun.routineId,
+        dispatchFingerprint: oldRun.dispatchFingerprint,
+        newerRunId: newerSuccessfulRun.id,
+        newerLinkedIssueId: newerSuccessfulRun.linkedIssueId,
+      },
+    });
+
+    return updated;
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2499,6 +2590,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
+        continue;
+      }
+
+      const supersededRoutineExecution = await suppressSupersededRoutineExecutionRecovery(issue);
+      if (supersededRoutineExecution) {
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
         continue;
       }
 

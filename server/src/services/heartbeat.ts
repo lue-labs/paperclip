@@ -7446,6 +7446,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
+      if (retriedRun) {
+        const retryIssueId = issueIdFromRunContext(retriedRun.contextSnapshot);
+        if (retryIssueId) {
+          await db
+            .update(issues)
+            .set({ checkoutRunId: null, updatedAt: new Date() })
+            .where(and(
+              eq(issues.id, retryIssueId),
+              eq(issues.companyId, retriedRun.companyId),
+              eq(issues.checkoutRunId, retriedRun.id),
+            ));
+        }
+      }
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }

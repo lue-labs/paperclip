@@ -34,6 +34,8 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routineRuns,
+  routines,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -363,6 +365,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(routineRuns);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -696,6 +700,138 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
+  }
+
+  async function seedSupersededRoutineExecutionFixture() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const routineId = randomUUID();
+    const oldRoutineRunId = randomUUID();
+    const newerRoutineRunId = randomUUID();
+    const oldHeartbeatRunId = randomUUID();
+    const oldWakeupRequestId = randomUUID();
+    const oldIssueId = randomUUID();
+    const newerIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const fingerprint = "routine:fingerprint:daily-balance";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "RoutineRunner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Daily balance check",
+      assigneeAgentId: agentId,
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: oldWakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: oldIssueId },
+      status: "failed",
+      runId: oldHeartbeatRunId,
+      claimedAt: new Date("2026-06-10T08:00:00.000Z"),
+      finishedAt: new Date("2026-06-10T08:05:00.000Z"),
+      error: "routine attempt failed",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: oldHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      wakeupRequestId: oldWakeupRequestId,
+      contextSnapshot: { issueId: oldIssueId, taskId: oldIssueId, source: "routine_execution" },
+      startedAt: new Date("2026-06-10T08:00:00.000Z"),
+      finishedAt: new Date("2026-06-10T08:05:00.000Z"),
+      updatedAt: new Date("2026-06-10T08:05:00.000Z"),
+      errorCode: "adapter_failed",
+      error: "routine attempt failed",
+    });
+
+    await db.insert(issues).values([
+      {
+        id: oldIssueId,
+        companyId,
+        title: "Daily balance check — Jun 10",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        checkoutRunId: oldHeartbeatRunId,
+        executionRunId: oldHeartbeatRunId,
+        originKind: "routine_execution",
+        originRunId: oldRoutineRunId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        startedAt: new Date("2026-06-10T08:00:00.000Z"),
+      },
+      {
+        id: newerIssueId,
+        companyId,
+        title: "Daily balance check — Jun 11",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originRunId: newerRoutineRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+        completedAt: new Date("2026-06-11T08:05:00.000Z"),
+      },
+    ]);
+
+    await db.insert(routineRuns).values([
+      {
+        id: oldRoutineRunId,
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "failed",
+        triggeredAt: new Date("2026-06-10T08:00:00.000Z"),
+        dispatchFingerprint: fingerprint,
+        linkedIssueId: oldIssueId,
+        failureReason: "routine attempt failed",
+        completedAt: new Date("2026-06-10T08:05:00.000Z"),
+      },
+      {
+        id: newerRoutineRunId,
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "completed",
+        triggeredAt: new Date("2026-06-11T08:00:00.000Z"),
+        dispatchFingerprint: fingerprint,
+        linkedIssueId: newerIssueId,
+        completedAt: new Date("2026-06-11T08:05:00.000Z"),
+      },
+    ]);
+
+    return { companyId, agentId, oldIssueId, newerIssueId, oldRoutineRunId, newerRoutineRunId };
   }
 
   async function seedAssignedTodoNoRunFixture(input?: {
@@ -1826,6 +1962,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_escalated")).toBe(true);
+  });
+
+  it("suppresses recovery for a stale routine execution when a newer equivalent run completed", async () => {
+    const { companyId, agentId, oldIssueId, newerIssueId, oldRoutineRunId, newerRoutineRunId } =
+      await seedSupersededRoutineExecutionFixture();
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([oldIssueId]);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, oldIssueId)));
+    expect(recoveryActions).toHaveLength(0);
+
+    const recoveryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(recoveryWakeups.filter((wakeup) => wakeup.reason === "source_scoped_recovery_action")).toHaveLength(0);
+
+    const oldIssue = await db.select().from(issues).where(eq(issues.id, oldIssueId)).then((rows) => rows[0] ?? null);
+    expect(oldIssue?.status).toBe("cancelled");
+    expect(oldIssue?.assigneeAgentId).toBe(agentId);
+
+    const oldRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, oldRoutineRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(oldRun).toMatchObject({
+      status: "failed",
+      failureReason: `Superseded by newer successful routine run ${newerRoutineRunId}`,
+    });
+
+    const newerRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, newerRoutineRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(newerRun).toMatchObject({
+      status: "completed",
+      linkedIssueId: newerIssueId,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, oldIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("newer equivalent attempt already succeeded");
+    expect(comments[0]?.body).toContain(newerRoutineRunId);
   });
 
   it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
